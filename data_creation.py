@@ -9,11 +9,9 @@ import os
 from tqdm import tqdm
 
 # Constants
-NUM_PEOPLE = 200000
-LAT_RANGE = (23.6345, 37.0841)
-LON_RANGE = (60.8720, 77.0000)
-BATCH_SIZE = 50000
+NUM_PEOPLE = 30000
 RADIUS_KM = 5.0
+BATCH_SIZE = 50000  # Still safe as it's > NUM_PEOPLE
 TEMP_DIR = "temp_adjacency"
 ADJ_INDEX_FILE = "adjacency_index.json"
 
@@ -21,27 +19,35 @@ ADJ_INDEX_FILE = "adjacency_index.json"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
 # Helper functions
-def load_pakistan_boundaries():
-    print("⏳ Loading Pakistan boundaries...")
-    pakistan = gpd.read_file("pakistan.geojson")
-    print("✅ Boundaries loaded")
-    return pakistan.unary_union
+def load_punjab_boundary():
+    print("⏳ Loading Punjab boundary from Pakistan geojson...")
+    gdf = gpd.read_file("pakistan.geojson")
+    
+    # Ensure Punjab is selected — depends on the actual file's 'name' or 'province' column
+    punjab = gdf[gdf['NAME_1'].str.contains("Punjab", case=False, na=False)]
+    
+    if punjab.empty:
+        raise ValueError("Punjab boundary not found in the geojson. Check attribute names.")
 
-def generate_valid_location(pakistan_polygon):
+    print("✅ Punjab boundary loaded")
+    return punjab.unary_union
+
+def generate_valid_location(punjab_polygon):
+    bounds = punjab_polygon.bounds
     while True:
-        lat = random.uniform(*LAT_RANGE)
-        lon = random.uniform(*LON_RANGE)
-        if pakistan_polygon.contains(Point(lon, lat)):
+        lat = random.uniform(bounds[1], bounds[3])
+        lon = random.uniform(bounds[0], bounds[2])
+        if punjab_polygon.contains(Point(lon, lat)):
             return lat, lon
 
 def assign_age_group():
-    return random.choices(["Child", "Adult", "Elderly"], weights=[25, 60, 15])[0]
+    return random.choices(["Child", "Adult", "Elderly"], weights=[30, 45, 25])[0]
 
 def assign_chronic_illness():
-    return random.random() < 0.6
+    return random.random() < 0.8
 
 def assign_distancing():
-    return random.random() < 0.3
+    return random.random() < 0.2
 
 def degree_to_km(lat):
     return 111.32 * np.cos(np.radians(lat))
@@ -54,18 +60,18 @@ def haversine_km(lat1, lon1, lat2, lon2):
     return 2 * R * np.arcsin(np.sqrt(a))
 
 def generate_population():
-    pakistan_polygon = load_pakistan_boundaries()
+    punjab_polygon = load_punjab_boundary()
     individuals = []
     coords = []
 
-    print(f"⏳ Generating {NUM_PEOPLE} individuals...")
+    print(f"⏳ Generating {NUM_PEOPLE} individuals within Punjab...")
     for i in tqdm(range(NUM_PEOPLE)):
-        lat, lon = generate_valid_location(pakistan_polygon)
+        lat, lon = generate_valid_location(punjab_polygon)
         age_group = assign_age_group()
         chronic = assign_chronic_illness()
         distancing = assign_distancing()
 
-        # Early detection factor (0.0 to 1.0) - no late detection
+        # Early detection factor (0.0 to 1.0)
         if age_group == "Adult":
             early_detect = round(random.uniform(0.6, 0.9), 2)
         elif age_group == "Elderly":
@@ -97,7 +103,7 @@ def generate_population():
     with open("synthetic_population.json", "w") as f:
         json.dump(individuals, f, indent=2)
     print("✅ Population data saved")
-    
+
     np.save("population_coords.npy", np.array(coords))
     print("✅ Coordinates saved for adjacency generation")
 
@@ -105,7 +111,7 @@ def generate_population():
 
 def build_adjacency_list_batched(coords, radius_km=RADIUS_KM):
     start_time = time.time()
-    print(f"⏳ Building adjacency list using batched KDTree...")
+    print(f"⏳ Building adjacency list using KDTree...")
 
     avg_lat = np.mean([c[0] for c in coords])
     radius_deg = radius_km / degree_to_km(avg_lat)
@@ -157,25 +163,17 @@ def build_adjacency_list_batched(coords, radius_km=RADIUS_KM):
 def merge_adjacency_batches():
     print(f"⏳ Merging adjacency batches...")
 
-    # Load the index file containing the batch file information
     with open(ADJ_INDEX_FILE, "r") as f:
         barrel_index = json.load(f)
 
     full_adjacency_list = {}
 
-    # Iterate through all batch files and load their adjacency data
-    for batch_file, batch_info in tqdm(barrel_index.items()):
-        batch_filepath = os.path.join(TEMP_DIR, batch_file)
-        
-        # Read the batch adjacency data
-        with open(batch_filepath, "r") as f:
+    for batch_file, _ in tqdm(barrel_index.items()):
+        with open(os.path.join(TEMP_DIR, batch_file), "r") as f:
             batch_adjacency = json.load(f)
-
-        # Merge batch data into the full adjacency list
         full_adjacency_list.update(batch_adjacency)
 
-    # Save the full adjacency list to a file
-    with open("full_adjacency_list.json", "w") as f:
+    with open("adjacency_list.json", "w") as f:
         json.dump(full_adjacency_list, f, indent=2)
 
     print("✅ All batches merged into full adjacency list")
@@ -197,9 +195,7 @@ def main():
     else:
         build_adjacency_list_batched(coords)
 
-    # Merge adjacency batches into a full adjacency list
     merge_adjacency_batches()
-
     total = time.time() - start
     print(f"✅ All processing completed in {total:.2f} seconds")
 

@@ -33,10 +33,11 @@ if st.sidebar.button("▶️ Run Simulation") and st.session_state.data_created:
     with open("adjacency_list.json") as f:
         adjacency = json.load(f)
 
-    data = infect_random_start(base_data, per_city=2)
+    data = infect_random_start(base_data, per_cluster=5, num_clusters=10)
     for day in range(31):
         G, edge_list = build_daily_graph(data, adjacency, st.session_state.infection_log)
-        data, st.session_state.infection_log = run_simulation_step(data, G, None, 0.05, st.session_state.infection_log)
+        data, G, st.session_state.infection_log = run_simulation_step(data, G, None, 0.05, st.session_state.infection_log)
+
         st.session_state.timeline.append({
             "data": json.loads(json.dumps(data)),
             "edges": edge_list

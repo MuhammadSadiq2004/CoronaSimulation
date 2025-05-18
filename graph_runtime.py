@@ -19,11 +19,11 @@ def build_daily_graph(data, adjacency_list, infection_log=None):
     edges = adjacency_list
     edge_list = []
     data_dict = {p["id"]: p for p in data}
-    sampling_rate = 0.01
+    sampling_rate = 1
 
     for p1_id, neighbors in adjacency_list.items():
         if random.random() < sampling_rate:
-            p1 = data_dict[int(p1_id)]
+            p1 = data_dict.get(int(p1_id), None)
             for p2_id in neighbors[:3]:  # limit neighbors for visual clarity
                 p2 = data_dict[int(p2_id)]
                 status1 = p1["status"]
@@ -54,40 +54,37 @@ def build_daily_graph(data, adjacency_list, infection_log=None):
                 })
 
     return edges, edge_list
+import random
+import math
 
-def infect_random_start(data, per_city=2):
-    """
-    Infect `per_city` people in each of the 10 major cities of Pakistan.
-    """
+def euclidean_distance(person1, person2):
+    """ Calculate Euclidean distance between two people based on lat/lon. """
+    return math.sqrt((person1["lat"] - person2["lat"]) ** 2 + (person1["lon"] - person2["lon"]) ** 2)
 
-    city_bounds = [
-        ("Karachi",     24.8, 25.1, 66.9, 67.3),
-        ("Lahore",      31.4, 31.7, 74.2, 74.4),
-        ("Faisalabad",  31.3, 31.5, 72.9, 73.2),
-        ("Rawalpindi",  33.5, 33.7, 73.0, 73.2),
-        ("Multan",      30.1, 30.3, 71.4, 71.6),
-        ("Hyderabad",   25.3, 25.5, 68.3, 68.5),
-        ("Islamabad",   33.6, 33.8, 72.9, 73.1),
-        ("Gujranwala",  32.1, 32.2, 74.1, 74.2),
-        ("Peshawar",    34.0, 34.2, 71.4, 71.6),
-        ("Quetta",      30.1, 30.3, 66.9, 67.1)
-    ]
+def infect_random_start(data, per_cluster=3, num_clusters=5):
+    """ Infect people in 5 randomly selected clusters within the Punjab bounds. """
+    punjab_lat_min, punjab_lat_max = 27.0, 34.0
+    punjab_lon_min, punjab_lon_max = 68.0, 75.0
 
-    infected_ids = []
+    # Filter only people within Punjab
+    punjab_people = [p for p in data if punjab_lat_min <= p["lat"] <= punjab_lat_max and punjab_lon_min <= p["lon"] <= punjab_lon_max]
 
-    for city_name, lat_min, lat_max, lon_min, lon_max in city_bounds:
-        candidates = [
-            p["id"] for p in data
-            if lat_min <= p["lat"] <= lat_max and lon_min <= p["lon"] <= lon_max and p["id"] not in infected_ids
-        ]
-        selected = random.sample(candidates, min(per_city, len(candidates)))
-        infected_ids.extend(selected)
+    if len(punjab_people) < per_cluster:
+        per_cluster = len(punjab_people)
 
-    for p in data:
-        if p["id"] in infected_ids:
-            p["status"] = "infected"
-            p["days_infected"] = 0
-            p["initial_cluster_infected"] = True
+    # Choose num_clusters random people as the center of each cluster
+    random_centers = random.sample(punjab_people, num_clusters)
+
+    # Infect the center person and the nearest people in the cluster
+    for center_person in random_centers:
+        # Sort people by distance to the center
+        sorted_by_distance = sorted(punjab_people, key=lambda p: euclidean_distance(center_person, p))
+        
+        # Infect the center person and the nearest per_cluster people
+        infected = sorted_by_distance[:per_cluster]
+        for person in infected:
+            person["status"] = "infected"
+            person["days_infected"] = 0
 
     return data
 
@@ -96,12 +93,30 @@ def run_simulation_step(data, G, local_density=None, base_prob=0.05, infection_l
         infection_log = []
 
     data_dict = {p["id"]: p for p in data}
+    
+    # Remove nodes without neighbors
+    nodes_to_remove = []
+    for person in data:
+        # Get neighbors from the graph (G) for this person
+        neighbors = G.get(str(person["id"]), [])
+        if not neighbors:  # If no neighbors, mark for removal
+            nodes_to_remove.append(person["id"])
+    
+    # Remove the nodes without neighbors from data
+    data = [person for person in data if person["id"] not in nodes_to_remove]
+    data_dict = {p["id"]: p for p in data}  # Rebuild the dictionary after removal
 
+    # Update the graph to remove edges connected to removed nodes
+    G = {key: [nid for nid in neighbors if nid not in nodes_to_remove] 
+         for key, neighbors in G.items() if key not in nodes_to_remove}
+
+    # Step 1: Handle infected people and progression of infection (recovery or death)
     for person in data:
         if person["status"] == "infected":
             person["days_infected"] += 1
             person["status"] = determine_recovery_or_death(person, person["days_infected"])
 
+    # Step 2: Attempt to infect healthy people based on their infected neighbors
     for person in data:
         if person["status"] != "Healthy":
             continue
@@ -120,4 +135,4 @@ def run_simulation_step(data, G, local_density=None, base_prob=0.05, infection_l
                 source = int(random.choice(infected_contacts))
                 infection_log.append((source, person["id"]))
 
-    return data, infection_log
+    return data, G, infection_log
